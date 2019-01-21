@@ -128,8 +128,30 @@ module Server_connection = struct
     ;;
   end
 
+  module Write_operation = struct
+    type t = [
+      | `Write of Bigstring.t IOVec.t list
+      | `Yield
+      | `Close of int ]
+
+    let pp_hum fmt t =
+      let str =
+        (* dpatti: These should obviously include the constructor arguments *)
+        match t with
+        | `Write _ -> "Write"
+        | `Yield -> "Yield"
+        | `Close _ -> "Close"
+      in
+      Format.pp_print_string fmt str
+    ;;
+  end
+
   let default_request_handler reqd =
     Reqd.respond_with_string reqd (Response.create `OK) ""
+  ;;
+
+  let exception_request_handler _reqd =
+    failwith "Exception in request handler"
   ;;
 
   let test_initial_reader_state () =
@@ -154,9 +176,27 @@ module Server_connection = struct
       `Close (next_read_operation t);
   ;;
 
+  let test_error_written_after_exception () =
+    let t = create exception_request_handler in
+    Alcotest.(check (of_pp Write_operation.pp_hum)) "Writer initially yields"
+      `Yield (next_write_operation t);
+    let writer_awake = ref false in
+    yield_writer t (fun () ->
+      writer_awake := true);
+    Alcotest.(check (of_pp Read_operation.pp_hum)) "Reader is ready for input"
+      `Read (next_read_operation t);
+    let request = Bigstringaf.of_string "GET / HTTP/1.1\n\n" ~off:0 ~len:16 in
+    ignore (read t request ~off:0 ~len:16);
+    Alcotest.(check bool) "Writer was woken" true !writer_awake;
+    Alcotest.(check (of_pp Write_operation.pp_hum)) "Writer is ready to write"
+      (`Write []) (next_write_operation t);
+    ()
+  ;;
+
   let tests =
     [ "initial reader state"  , `Quick, test_initial_reader_state
     ; "shutdown reader closed", `Quick, test_reader_is_closed_after_eof
+    ; "error written on exception", `Quick, test_error_written_after_exception
     ]
 
 end
